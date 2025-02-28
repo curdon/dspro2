@@ -3,12 +3,22 @@ import argparse
 import pandas as pd
 import mlflow
 import mlflow.sklearn
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import classification_report
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
-import mltable
-from azure.ai.ml import MLClient
-from azure.identity import DefaultAzureCredential
+
+import subprocess
+import sys
+# Ensure required package is installed
+packages = ["azureml-core"]
+
+for package in packages:
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to install {package}: {e}")
+
+from azureml.core import Workspace, Dataset
 
 def main():
     """Main function of the script."""
@@ -36,20 +46,28 @@ def main():
     print("input data:", args.data)
 
     # load registered data
-    ml_client = MLClient.from_config(credential=DefaultAzureCredential())
-    data_asset = ml_client.data.get(args.data, version="1")
-    tbl = mltable.load(f'azureml:/{data_asset.id}')
-    pddf_bh = tbl.to_pandas_dataframe()
+
+    subscription_id = '08539d0e-620d-424c-aea8-56853ed8fe3e'
+    resource_group = 'dspro2'
+    workspace_name = 'dspro2ml'
+
+    workspace = Workspace(subscription_id, resource_group, workspace_name)
+
+    dataset = Dataset.get_by_name(workspace, name='bostonhousing')
+    pddf_bh = dataset.to_pandas_dataframe()
     
-    credit_df = pd.read_csv(args.data, header=1, index_col=0)
+    mlflow.log_metric("num_samples", pddf_bh.shape[0])
+    mlflow.log_metric("num_features", pddf_bh.shape[1] - 1)
 
-    mlflow.log_metric("num_samples", credit_df.shape[0])
-    mlflow.log_metric("num_features", credit_df.shape[1] - 1)
+    # Your training code goes here
+    target = "medv"
 
-    train_df, test_df = train_test_split(
-        credit_df,
-        test_size=args.test_train_ratio,
-    )
+    X = pddf_bh.drop(target, axis=1)
+    y = pddf_bh[target]
+
+    # Split the data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
     ###################
     #</prepare the data>
     ###################
@@ -57,28 +75,15 @@ def main():
     ##################
     #<train the model>
     ##################
-    # extracting the label column
-    y_train = train_df.pop("default payment next month")
 
-    # convert the dataframe values to array
-    X_train = train_df.values
-
-    # extracting the label column
-    y_test = test_df.pop("default payment next month")
-
-    # convert the dataframe values to array
-    X_test = test_df.values
-
-    print(f"Training with data of shape {X_train.shape}")
-
-    clf = GradientBoostingClassifier(
-        n_estimators=args.n_estimators, learning_rate=args.learning_rate
-    )
+    n_estimators = 100
+    clf = RandomForestRegressor(n_estimators=n_estimators, random_state=42)
     clf.fit(X_train, y_train)
 
+    # Evaluate the model
     y_pred = clf.predict(X_test)
-
-    print(classification_report(y_test, y_pred))
+    mse = mean_squared_error(y_test, y_pred)
+    print(f"Mean Squared Error: {mse}")
 
     ##################
     #</train the model>
