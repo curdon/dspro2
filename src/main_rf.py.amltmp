@@ -7,6 +7,8 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
 
+import joblib
+
 import subprocess
 import sys
 # Ensure required package is installed
@@ -18,7 +20,8 @@ for package in packages:
     except subprocess.CalledProcessError as e:
         print(f"Failed to install {package}: {e}")
 
-from azureml.core import Workspace, Dataset
+from azureml.core import Workspace, Dataset, Model
+from azureml.core.run import Run
 
 def main():
     """Main function of the script."""
@@ -30,81 +33,89 @@ def main():
     parser.add_argument("--n_estimators", required=False, default=100, type=int)
     parser.add_argument("--registered_model_name", type=str, help="model name")
     args = parser.parse_args()
-   
-    # start Logging
-    mlflow.start_run()
 
-    # enable autologging
-    mlflow.sklearn.autolog()
+    try:
+        
+        # Get the Azure ML run context
+        run = Run.get_context()
 
-    ###################
-    #<prepare the data>
-    ###################
-    print(" ".join(f"{k}={v}" for k, v in vars(args).items()))
+        # start Logging
+        mlflow.start_run()
 
-    print("input data:", args.data)
+        # enable autologging
+        mlflow.sklearn.autolog()
 
-    # load registered data
-    subscription_id = '08539d0e-620d-424c-aea8-56853ed8fe3e'
-    resource_group = 'dspro2'
-    workspace_name = 'dspro2ml'
+        ###################
+        #<prepare the data>
+        ###################
+        print(" ".join(f"{k}={v}" for k, v in vars(args).items()))
 
-    workspace = Workspace(subscription_id, resource_group, workspace_name)
+        print("input data:", args.data)
 
-    dataset = Dataset.get_by_name(workspace, name=args.data)
-    pddf_bh = dataset.to_pandas_dataframe()
+        # load registered data
+        subscription_id = '08539d0e-620d-424c-aea8-56853ed8fe3e'
+        resource_group = 'dspro2'
+        workspace_name = 'dspro2ml'
+
+        workspace = Workspace(subscription_id, resource_group, workspace_name)
+
+        dataset = Dataset.get_by_name(workspace, name=args.data)
+        pddf_bh = dataset.to_pandas_dataframe()
+        
+        mlflow.log_metric("num_samples", pddf_bh.shape[0])
+        mlflow.log_metric("num_features", pddf_bh.shape[1] - 1)
+
+        # Your training code goes here
+        target = "target"
+
+        X = pddf_bh.drop(target, axis=1)
+        y = pddf_bh[target]
+
+        # Split the data
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=args.test_train_ratio, random_state=42)
+
+        ###################
+        #</prepare the data>
+        ###################
+
+        ##################
+        #<train the model>
+        ##################
+
+        clf = RandomForestRegressor(n_estimators=args.n_estimators, random_state=42)
+        clf.fit(X_train, y_train)
+
+        # Evaluate the model
+        y_pred = clf.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        print(f"Mean Squared Error: {mse}")
+
+        ##################
+        #</train the model>
+        ##################
+
+        ##########################
+        #<save and register model>
+        ##########################
+        # registering the model to the workspace
+        print("Registering the model via MLFlow")
+        mlflow.sklearn.log_model(
+            sk_model=clf,
+            registered_model_name=args.registered_model_name,
+            artifact_path=args.registered_model_name,
+        )
+        
+        run.input_datasets["training_data"] = dataset
+
+        # saving the model to a file
+        mlflow.sklearn.save_model(
+            sk_model=clf,
+            path=os.path.join(args.registered_model_name, "trained_model"),
+        )
     
-    mlflow.log_metric("num_samples", pddf_bh.shape[0])
-    mlflow.log_metric("num_features", pddf_bh.shape[1] - 1)
-
-    # Your training code goes here
-    target = "target"
-
-    X = pddf_bh.drop(target, axis=1)
-    y = pddf_bh[target]
-
-    # Split the data
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=args.test_train_ratio, random_state=42)
-
-    ###################
-    #</prepare the data>
-    ###################
-
-    ##################
-    #<train the model>
-    ##################
-
-    clf = RandomForestRegressor(n_estimators=args.n_estimators, random_state=42)
-    clf.fit(X_train, y_train)
-
-    # Evaluate the model
-    y_pred = clf.predict(X_test)
-    mse = mean_squared_error(y_test, y_pred)
-    print(f"Mean Squared Error: {mse}")
-
-    ##################
-    #</train the model>
-    ##################
-
-    ##########################
-    #<save and register model>
-    ##########################
-    # registering the model to the workspace
-    print("Registering the model via MLFlow")
-    mlflow.sklearn.log_model(
-        sk_model=clf,
-        registered_model_name=args.registered_model_name,
-        artifact_path=args.registered_model_name,
-    )
-
-    # saving the model to a file
-    mlflow.sklearn.save_model(
-        sk_model=clf,
-        path=os.path.join(args.registered_model_name, "trained_model"),
-    )
-    
-    # stop Logging
-    mlflow.end_run()
+    finally:
+        # stop Logging
+        mlflow.end_run()
 
 if __name__ == "__main__":
     main()
